@@ -1,0 +1,200 @@
+﻿version 3.00
+cm_version 1.0
+platform CM-530
+o // param_text:Bioloid Premium Kit King Spider Task code
+o // param_text:Initial Release : October 1, 2009.
+o // param_text:Revised : Assembly check added (September 28, 2010).
+o // param_text:How the program works
+o // param_text:The spider avoids obstacles.
+o // param_text:The spider attacks when it detects an object.
+o // param_text:The spider sleeps when idle.
+o main
+o begin
+o load param_dest:cm:22 param_src:dec_num:1
+o while(1)
+o begin
+o if param_src:motor:1:113 lop:>= param_src:dec_num:52 rop:then
+o begin
+o load param_dest:cm:17 param_src:melody_num:7
+o load param_dest:cm:18 param_src:dec_num:100
+o end
+o if param_src:motor:2:113 lop:>= param_src:dec_num:52 rop:then
+o begin
+o load param_dest:cm:17 param_src:melody_num:7
+o load param_dest:cm:18 param_src:dec_num:100
+o end
+o if param_src:cm:2 lop:== param_src:bool_num:1 rop:then
+o begin
+o if param_src:cm:1 lop:== param_src:rc100z_num:1 rop:then
+o begin
+o load param_dest:motion:1:50 param_src:dec_num:2
+o end
+o if param_src:cm:1 lop:== param_src:rc100z_num:2 rop:then
+o begin
+o load param_dest:motion:1:50 param_src:dec_num:3
+o end
+o if param_src:cm:1 lop:== param_src:rc100z_num:4 rop:then
+o begin
+o load param_dest:motion:1:50 param_src:dec_num:5
+o end
+o if param_src:cm:1 lop:== param_src:rc100z_num:8 rop:then
+o begin
+o load param_dest:motion:1:50 param_src:dec_num:4
+o end
+o if param_src:cm:1 lop:== param_src:rc100z_num:16 rop:then
+o begin
+o load param_dest:motion:1:50 param_src:dec_num:1
+o end
+- 
+o // param_text:Custom
+o end
+o if param_src:cm:1 lop:== param_src:dec_num:1 rop:then
+o begin
+o load param_dest:motion:1:50 param_src:dec_num:2
+o end
+o if param_src:var:ID lop:== param_src:dec_num:5 rop:then
+o begin
+o load param_dest:motion:1:50 param_src:dec_num:1
+o end
+- 
+o end
+o // param_text:AssemblyCheck
+o label laddr_src:AssemblyCheckMode
+o // param_text:Assembly check tune
+o load param_dest:cm:18 param_src:buzzertime_num:255
+o load param_dest:cm:17 param_src:melody_num:1
+- 
+o load param_dest:var:ID param_src:dec_num:1
+o load param_dest:motor:254:107 param_src:dir_num:100
+o load param_dest:motor:254:100 param_src:bool_num:0
+o load param_dest:motor:254:101 param_src:bool_num:0
+o load param_dest:cm:5 param_src:timer_num:12
+o call faddr_dest:WaitTimerCompletion
+- 
+o while(1)
+o begin
+o if param_src:cm:4 lop:== param_src:button_num:8 rop:then
+o begin
+o load param_dest:motor:254:100 param_src:bool_num:0
+o load param_dest:cm:5 param_src:timer_num:5
+o load param_dest:cm:18 param_src:buzzertime_num:5
+o load param_dest:cm:17 param_src:scale_num:15
+o call faddr_dest:WaitTimerCompletion
+o if param_src:var:ID lop:< param_src:dec_num:18 rop:then
+o begin
+o load param_dest:custom:b:ID:24 param_src:dec_num:0
+o load param_dest:custom:b:ID:25 param_src:dec_num:0
+o compute param_dest:var:ID param_src:var:ID aop:+ param_src:dec_num:1
+o end
+o end
+o elseif param_src:cm:4 lop:== param_src:button_num:4 rop:then
+o begin
+o load param_dest:motor:254:100 param_src:bool_num:0
+o load param_dest:cm:5 param_src:timer_num:5
+o load param_dest:cm:18 param_src:buzzertime_num:5
+o load param_dest:cm:17 param_src:scale_num:3
+o call faddr_dest:WaitTimerCompletion
+o if param_src:var:ID lop:> param_src:dec_num:1 rop:then
+o begin
+o load param_dest:custom:b:ID:24 param_src:dec_num:0
+o load param_dest:custom:b:ID:25 param_src:dec_num:0
+o compute param_dest:var:ID param_src:var:ID aop:- param_src:dec_num:1
+o end
+o end
+o elseif param_src:cm:4 lop:== param_src:button_num:1 rop:then
+o jump laddr_dest:SensorCheckMode
+o if param_src:custom:b:ID:3 lop:!= param_src:var:ID rop:then
+o begin
+o if param_src:cm:18 lop:== param_src:buzzertime_num:0 rop:then
+o begin
+o load param_dest:cm:18 param_src:buzzertime_num:255
+o load param_dest:cm:17 param_src:melody_num:16
+o end
+o end
+o elseif param_src:custom:w:ID:34 lop:== param_src:dec_num:0 rop:then
+o begin
+o if param_src:cm:18 lop:== param_src:buzzertime_num:0 rop:then
+o begin
+o load param_dest:cm:18 param_src:buzzertime_num:255
+o load param_dest:cm:17 param_src:melody_num:18
+o end
+o end
+o else
+o begin
+o load param_dest:custom:w:ID:30 param_src:dec_num:512
+o load param_dest:custom:b:ID:25 param_src:dec_num:1
+o end
+o end
+o label laddr_src:SensorCheckMode
+o load param_dest:motor:254:107 param_src:dir_num:100
+o load param_dest:motor:254:101 param_src:bool_num:0
+o load param_dest:cm:18 param_src:buzzertime_num:255
+o load param_dest:cm:17 param_src:melody_num:10
+o call faddr_dest:AssemblyCheckPosition
+o while(1)
+o begin
+o if param_src:cm:4 lop:== param_src:button_num:2 rop:then
+o jump laddr_dest:AssemblyCheckMode
+o if param_src:aux:3:63 lop:>= param_src:dec_num:50 rop:then
+o begin
+o load param_dest:custom:w:9:30 param_src:dec_num:612
+o load param_dest:custom:w:10:30 param_src:dec_num:412
+o end
+o else
+o begin
+o load param_dest:custom:w:9:30 param_src:dec_num:512
+o load param_dest:custom:w:10:30 param_src:dec_num:512
+o end
+o if param_src:aux:4:63 lop:>= param_src:dec_num:50 rop:then
+o begin
+o load param_dest:custom:w:1:30 param_src:dec_num:412
+o load param_dest:custom:w:2:30 param_src:dec_num:612
+o end
+o else
+o begin
+o load param_dest:custom:w:1:30 param_src:dec_num:512
+o load param_dest:custom:w:2:30 param_src:dec_num:512
+o end
+o load param_dest:motor:254:107 param_src:dir_num:100
+o end
+o // param_text:Assembly check
+o end
+- 
+o function faddr_src:Stop
+o begin
+o load param_dest:motion:1:50 param_src:dec_num:0
+o call faddr_dest:CompleteMotion
+o end
+- 
+o function faddr_src:CompleteMotion
+o begin
+o wait param_src:motion:1:51 lop:== param_src:bool_num:1 rop:then
+o end
+o // param_text:Assembly check
+o function faddr_src:WaitTimerCompletion
+o begin
+o wait param_src:cm:5 lop:> param_src:timer_num:0 rop:then
+o end
+- 
+o function faddr_src:AssemblyCheckPosition
+o begin
+o for param_var:ID param_src:dec_num:1 param_src:dec_num:18
+o begin
+o load param_dest:custom:w:ID:30 param_src:dec_num:512
+o end
+o end
+- 
+o function faddr_src:AssemblyError
+o begin
+o load param_dest:motor:254:107 param_src:dir_num:100
+o load param_dest:motor:254:100 param_src:bool_num:0
+o load param_dest:motor:254:101 param_src:bool_num:0
+o while(1)
+o begin
+o if param_src:cm:18 lop:== param_src:buzzertime_num:0 rop:then
+o begin
+o load param_dest:cm:18 param_src:buzzertime_num:255
+o load param_dest:cm:17 param_src:melody_num:16
+o end
+o end
+o end

@@ -1,0 +1,19 @@
+# Core hardware communication
+# Required by IKControl.py, SControl.py, StatsPos.py, CalibrationPose.py, and tools/*
+dynamixel-sdk>=3.7.31
+pyserial>=3.5
+
+# Web server support
+# Required by IKControl.py / SControl.py and experiment web controllers
+fastapi>=0.110.0
+uvicorn>=0.29.0
+pydantic>=2.0.0
+
+# Hexapod launcher / COM-port switching web interface
+# Required by control/main.py
+flask>=3.0.0
+
+# Controller client support
+# Required by control/ControllerClient.py and controller-client experiments
+pygame>=2.5.0
+requests>=2.31.0
