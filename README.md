@@ -2,6 +2,12 @@
 
 This folder contains the cleaned working files for the AX-series hexapod research project. It keeps only project-relevant code, hardware assets, documentation, tools, and selected experiment milestones. Personal task notes, terminal logs, temporary package notes, virtual environments, Python cache files, and redundant non-project clutter were removed.
 
+## Reproducibility Note
+
+This Code Ocean capsule provides the software workflow, dependency list, setup instructions, calibration notes, and movement-test procedure for the Dynamixel-based hexapod control bridge. The physical movement results require the actual robot hardware, including the CM-530/Dynamixel communication path, AX-series Dynamixel actuators, calibrated ready pose, battery power system, and physical test surface.
+
+This capsule supports software reproducibility and procedure verification. Exact walking distance, actuator temperature, and timing may vary depending on battery voltage, actuator condition, floor contact, mechanical alignment, load distribution, and manual timing latency.
+
 ## Main folders
 
 - `control/` — current runnable control scripts.
