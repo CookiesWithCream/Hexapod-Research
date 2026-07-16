@@ -7534,5 +7534,422 @@ def print_ik_status():
     print(f'  stabilized web READY={IK_WEB_READY_STABLE_ENABLED}')
 
 
+# ============================================================
+# V22 IK MOTION SPIDER-REACH + FR TIBIA LOAD RELIEF
+# ============================================================
+# Real-hardware feedback addressed:
+#   - The stabilized READY return was safer, but took noticeably longer because
+#     V21 re-read all 18 motors before nearly every recovery sub-step.
+#   - In IK Motion, a lifted leg used fixed walklift femur/tibia angles while the
+#     hip alone moved forward. Visually this kept FL/FR folded during reach,
+#     instead of producing a clear lift -> extend/reach -> plant -> pull path.
+#   - FR_tibia remained the highest-load front joint after forward recovery.
+#
+# This patch affects plain native IK Motion only. Fixed gait, side-strafe guards,
+# Body IK, and IK Bezier Motion retain their earlier paths.
+# ============================================================
+
+IK_WALK_SPIDER_REACH_ENABLED = True
+IK_WALK_SWING_OUTWARD_CM = 0.65
+IK_WALK_FRONT_REACH_BLEND = 0.58
+IK_WALK_OTHER_REACH_BLEND = 0.42
+IK_WALK_FR_SWING_TIBIA_EXTENSION_DEG = 3.0
+IK_WALK_FR_GROUNDED_TIBIA_SCALE = 0.20
+IK_WALK_FL_GROUNDED_TIBIA_SCALE = 0.42
+
+# Make support travel happen more progressively instead of performing the full
+# rearward push while the opposite tripod is still high in the air.
+IK_NATIVE_SUPPORT_SWING_SCALE = 0.62
+IK_NATIVE_SUPPORT_DOWN_SCALE = 0.82
+
+# Keep touchdown protection, but remove unnecessary visible pauses.
+IK_WALK_TOUCHDOWN_TOLERANCE_TICKS = 14
+IK_WALK_TOUCHDOWN_TIMEOUT = 0.30
+IK_WALK_TOUCHDOWN_EXTRA_HOLD = 0.04
+
+# Faster measured READY recovery. The important change is not only the values:
+# V22 reads the physical pose once at the beginning instead of before every
+# intermediate frame sequence.
+IK_WEB_READY_LIFT_HOLD = 0.10
+IK_WEB_READY_HIP_HOLD = 0.07
+IK_WEB_READY_DOWN_HOLD = 0.13
+IK_WEB_READY_FINAL_HOLD_STABLE = 0.16
+IK_WEB_READY_SMOOTH_STEPS = 6
+IK_WEB_READY_FRAME_DELAY = 0.025
+IK_WEB_READY_MIN_SPEED = 45
+IK_FR_TIBIA_INTERMEDIATE_RELIEF_TICKS = 5
+
+
+def _ik_outward_sign(leg: str) -> float:
+    return 1.0 if leg in ['FL', 'ML', 'RL'] else -1.0
+
+
+def _ik_spider_adjust_lifted_foot(
+    leg: str,
+    direction: str,
+    phase: str,
+    foot: Dict[str, float],
+) -> Dict[str, float]:
+    """Add a small radial/outward arc while a W/S swing leg is airborne."""
+    if not IK_WALK_SPIDER_REACH_ENABLED:
+        return foot
+    if normalize_direction(direction) not in ['forward', 'backward']:
+        return foot
+    if phase not in ['up', 'swing']:
+        return foot
+
+    adjusted = copy_foot(foot)
+    outward = float(IK_WALK_SWING_OUTWARD_CM)
+    if phase == 'up':
+        outward *= 0.45
+    adjusted['y'] += _ik_outward_sign(leg) * outward
+    return adjusted
+
+
+def _ik_lifted_reach_joint_degrees(
+    leg: str,
+    adjusted_foot: Dict[str, float],
+    geometric_femur: float,
+    geometric_tibia: float,
+) -> Tuple[float, float]:
+    """
+    Blend proven direct walklift clearance with geometric IK reach.
+
+    Neutral vertical lift still uses the reliable walklift joint values. As the
+    airborne foot moves away from its READY x/y coordinate, femur/tibia blend
+    toward the geometric solution so the knee unfolds and the foot reaches,
+    instead of rotating only the coxa while staying folded.
+    """
+    lift_femur, lift_tibia = _current_walklift_joint_degrees()
+    base = IK_DEFAULT_FEET_CM[leg]
+    horizontal_delta = math.hypot(
+        float(adjusted_foot['x']) - float(base['x']),
+        float(adjusted_foot['y']) - float(base['y']),
+    )
+    # Full blend is reached near the current half-stride. Up/neutral remains
+    # close to the proven direct-joint lift profile.
+    reach_denominator = max(1.0, float(IK_STEP_CM) * 0.50)
+    reach_ratio = clamp_float(horizontal_delta / reach_denominator, 0.0, 1.0)
+    max_blend = (
+        float(IK_WALK_FRONT_REACH_BLEND)
+        if leg in ['FL', 'FR']
+        else float(IK_WALK_OTHER_REACH_BLEND)
+    )
+    blend = reach_ratio * clamp_float(max_blend, 0.0, 1.0)
+
+    femur = lift_femur + (geometric_femur - lift_femur) * blend
+    tibia = lift_tibia + (geometric_tibia - lift_tibia) * blend
+
+    # Reach should unfold the knee, never fold it more than the proven neutral
+    # walklift pose. Also cap extra femur lift so backward/rearward geometry
+    # cannot drive a front leg toward an unnecessarily extreme raw target.
+    tibia = min(float(lift_tibia), float(tibia))
+    femur = max(float(lift_femur) - 12.0, float(femur))
+
+    # FR was visibly more folded and later carried the largest tibia load.
+    # A small extra unfolding amount is applied only while FR is reaching.
+    if leg == 'FR' and reach_ratio > 0.20:
+        tibia -= float(IK_WALK_FR_SWING_TIBIA_EXTENSION_DEG) * reach_ratio
+
+    return femur, tibia
+
+
+# Final IK target builder for V22. It replaces the direct-lift conflict while
+# preserving the previous calculated hip and calibrated READY offsets.
+def build_leg_ik_targets(leg: str, foot_target: Dict[str, float]) -> Dict[int, int]:
+    adjusted = apply_body_ik_to_foot(leg, foot_target)
+    hip_deg, geometric_femur, geometric_tibia = ik_relative_leg_degrees(leg, adjusted)
+    femur_deg = geometric_femur
+    tibia_deg = geometric_tibia
+
+    if IK_DIRECT_JOINT_LIFT_ENABLED and _ik_foot_is_lifted(leg, adjusted):
+        femur_deg, tibia_deg = _ik_lifted_reach_joint_degrees(
+            leg, adjusted, geometric_femur, geometric_tibia
+        )
+
+    return build_leg_offset_targets_ik_calculated(
+        leg, hip_deg, femur_deg, tibia_deg
+    )
+
+
+def _ik_grounded_leg_targets(leg: str, foot_target: Dict[str, float]) -> Dict[int, int]:
+    """Grounded W/S/Q/E IK with independent front femur/tibia load scaling."""
+    adjusted = apply_body_ik_to_foot(leg, foot_target)
+    hip_deg, femur_deg, tibia_deg = ik_relative_leg_degrees(leg, adjusted)
+
+    if leg in ['FL', 'FR']:
+        femur_scale = clamp_float(
+            float(IK_WALK_FRONT_GROUNDED_VERTICAL_SCALE), 0.0, 1.0
+        )
+        if leg == 'FR':
+            tibia_scale = clamp_float(
+                float(IK_WALK_FR_GROUNDED_TIBIA_SCALE), 0.0, 1.0
+            )
+        else:
+            tibia_scale = clamp_float(
+                float(IK_WALK_FL_GROUNDED_TIBIA_SCALE), 0.0, 1.0
+            )
+        femur_deg *= femur_scale
+        tibia_deg *= tibia_scale
+
+    return build_leg_offset_targets_ik_calculated(
+        leg, hip_deg, femur_deg, tibia_deg
+    )
+
+
+# Override the plain native W/S/Q/E phase builder again so the lifted target has
+# a visible outward arc before reaching forward/backward.
+def build_tripod_phase_ik_native(
+    lifted_legs: List[str],
+    support_legs: List[str],
+    direction: str,
+    phase: str,
+    support_push_active: bool = True,
+) -> Dict[int, int]:
+    targets = level_ready_pose()
+    direction = normalize_direction(direction)
+
+    if phase == 'up':
+        lifted_station = 'neutral' if IK_NATIVE_UP_PHASE_NEUTRAL else 'rear'
+        lifted_air = True
+        support_station = 'neutral' if IK_NATIVE_UP_PHASE_NEUTRAL else 'front'
+    elif phase == 'swing':
+        lifted_station = 'front'
+        lifted_air = True
+        support_station = 'rear_soft' if IK_NATIVE_SOFT_SUPPORT_PUSH else 'rear'
+    elif phase == 'down':
+        lifted_station = 'front'
+        lifted_air = False
+        support_station = 'rear_settle' if IK_NATIVE_SOFT_SUPPORT_PUSH else 'rear'
+    else:
+        lifted_station = 'neutral'
+        lifted_air = False
+        support_station = 'neutral'
+
+    for leg in lifted_legs:
+        foot = ik_native_target(leg, direction, lifted_station, lifted_air)
+        if lifted_air and _ik_plain_motion_active():
+            foot = _ik_spider_adjust_lifted_foot(leg, direction, phase, foot)
+        if _ik_plain_motion_active() and not lifted_air:
+            targets.update(_ik_grounded_leg_targets(leg, foot))
+        else:
+            targets.update(build_leg_ik_targets(leg, foot))
+
+    for leg in support_legs:
+        station = support_station if support_push_active else 'neutral'
+        foot = ik_native_target(leg, direction, station, False)
+        if _ik_plain_motion_active():
+            targets.update(_ik_grounded_leg_targets(leg, foot))
+        else:
+            targets.update(build_leg_ik_targets(leg, foot))
+
+    return targets
+
+
+def _ik_send_recovery_pose_fast(
+    bus: DynamixelBus,
+    targets: Dict[int, int],
+    speed: int,
+    hold: float,
+) -> None:
+    """Interpolate from the tracked/measured pose without another 18-motor read."""
+    global ACTIVE_GOALS
+    frames = interpolate_targets(
+        dict(ACTIVE_GOALS), targets, max(2, int(IK_WEB_READY_SMOOTH_STEPS))
+    )
+    for frame in frames:
+        bus.move_sync(frame, speed=speed)
+        ACTIVE_GOALS = dict(frame)
+        time.sleep(max(0.01, float(IK_WEB_READY_FRAME_DELAY)))
+    ACTIVE_GOALS = dict(targets)
+    if hold > 0:
+        time.sleep(float(hold))
+
+
+def _ik_tripod_load_score(bus: DynamixelBus, tripod: List[str]) -> int:
+    score = 0
+    for motor_id in _ik_tripod_vertical_ids(tripod):
+        try:
+            raw = bus.read2(motor_id, ADDR_PRESENT_LOAD)
+            load = decode_load_value(raw)
+            if load is not None:
+                score += abs(int(load))
+        except Exception:
+            pass
+    return score
+
+
+_PREVIOUS_WEB_RETURN_TO_READY_HOLD_RELEASE_V22 = web_return_to_ready_hold_release
+
+
+def web_return_to_ready_hold_release(bus: DynamixelBus, direction: str):
+    """Faster load-aware READY recovery for plain IK Motion."""
+    global ACTIVE_GOALS, CURRENT_MODE
+
+    if not (IK_WEB_READY_STABLE_ENABLED and _ik_plain_motion_active()):
+        return _PREVIOUS_WEB_RETURN_TO_READY_HOLD_RELEASE_V22(bus, direction)
+
+    web_log(f'IK spider-stable return to READY from {direction}...')
+    ready_pose = level_ready_pose()
+    recovery_speed = max(int(READY_SPEED), int(IK_WEB_READY_MIN_SPEED))
+
+    # One physical rebase is enough. V21 repeated this expensive all-motor read
+    # before every sub-step, which caused most of the long return delay.
+    ACTIVE_GOALS = _ik_read_present_pose(
+        bus, list(ALL_MOTOR_IDS), ACTIVE_GOALS
+    )
+
+    # Recover the more heavily loaded tripod first. In the reported forward
+    # tests this normally selects tripod B and unloads FR_tibia immediately.
+    score_a = _ik_tripod_load_score(bus, list(TRIPOD_A))
+    score_b = _ik_tripod_load_score(bus, list(TRIPOD_B))
+    recovery_groups = (
+        [('B', list(TRIPOD_B)), ('A', list(TRIPOD_A))]
+        if score_b > score_a
+        else [('A', list(TRIPOD_A)), ('B', list(TRIPOD_B))]
+    )
+    web_log(f'IK READY load order: {recovery_groups[0][0]} first (A={score_a}, B={score_b}).')
+
+    for group_name, tripod in recovery_groups:
+        CURRENT_MODE = f'WEB_IK_READY_{group_name}_LIFT_ACTUAL'
+        lift_pose = dict(ACTIVE_GOALS)
+        for leg in tripod:
+            _ik_recovery_add_lift(lift_pose, leg)
+        _ik_send_recovery_pose_fast(
+            bus, lift_pose, recovery_speed, IK_WEB_READY_LIFT_HOLD
+        )
+
+        CURRENT_MODE = f'WEB_IK_READY_{group_name}_HIP_CENTER_AIRBORNE'
+        hip_pose = dict(ACTIVE_GOALS)
+        for leg in tripod:
+            hip_id = joint_to_motor_id(leg_part_to_joint(leg, 'hip'))
+            hip_pose[hip_id] = ready_pose[hip_id]
+        _ik_send_recovery_pose_fast(
+            bus, hip_pose, recovery_speed, IK_WEB_READY_HIP_HOLD
+        )
+
+        CURRENT_MODE = f'WEB_IK_READY_{group_name}_DOWN_READY'
+        down_pose = dict(ACTIVE_GOALS)
+        for leg in tripod:
+            for part in ['hip', 'femur', 'tibia']:
+                motor_id = joint_to_motor_id(leg_part_to_joint(leg, part))
+                down_pose[motor_id] = ready_pose[motor_id]
+
+        # Intermediate soft landing only; final refresh still restores the exact
+        # calibrated READY value. This avoids slamming FR_tibia directly into
+        # its most loaded target while body weight is transferring.
+        if 'FR' in tripod:
+            fr_tibia_id = joint_to_motor_id(leg_part_to_joint('FR', 'tibia'))
+            down_pose[fr_tibia_id] = clamp_raw(
+                ready_pose[fr_tibia_id] + int(IK_FR_TIBIA_INTERMEDIATE_RELIEF_TICKS)
+            )
+
+        _ik_send_recovery_pose_fast(
+            bus, down_pose, recovery_speed, IK_WEB_READY_DOWN_HOLD
+        )
+
+    CURRENT_MODE = 'READY_REFINED2K_IK_SPIDER_STABLE'
+    _ik_send_recovery_pose_fast(
+        bus, ready_pose, recovery_speed, IK_WEB_READY_FINAL_HOLD_STABLE
+    )
+
+    settled, error = _ik_wait_for_joint_targets(
+        bus,
+        ready_pose,
+        list(ALL_MOTOR_IDS),
+        IK_WALK_TOUCHDOWN_TOLERANCE_TICKS,
+        0.38,
+        IK_WALK_TOUCHDOWN_POLL,
+    )
+    if not settled:
+        bus.move_sync(ready_pose, speed=recovery_speed)
+        ACTIVE_GOALS = dict(ready_pose)
+        time.sleep(0.22)
+        web_log(
+            f'IK READY final refresh used; max position error was {error} ticks.'
+        )
+
+    ACTIVE_GOALS = dict(ready_pose)
+    CURRENT_MODE = 'READY_REFINED2K'
+    web_log('IK spider-stable READY recovery completed.')
+
+
+_PREVIOUS_ACTION_IK_SETTINGS_V22 = action_ik_settings
+
+
+def action_ik_settings(parts: List[str]):
+    global IK_WALK_SPIDER_REACH_ENABLED, IK_WALK_SWING_OUTWARD_CM
+    global IK_WALK_FRONT_REACH_BLEND, IK_WALK_FR_SWING_TIBIA_EXTENSION_DEG
+    global IK_WALK_FR_GROUNDED_TIBIA_SCALE, IK_WALK_FL_GROUNDED_TIBIA_SCALE
+
+    sub = parts[1].lower() if len(parts) >= 2 else ''
+    if sub in ['spider', 'spiderwalk', 'reachpath']:
+        if len(parts) == 2:
+            print('IK spider reach:')
+            print(f'  enabled={IK_WALK_SPIDER_REACH_ENABLED}')
+            print(f'  outward arc={IK_WALK_SWING_OUTWARD_CM:.2f} cm')
+            print(f'  front reach blend={IK_WALK_FRONT_REACH_BLEND:.2f}')
+            print(f'  FR swing tibia unfold={IK_WALK_FR_SWING_TIBIA_EXTENSION_DEG:.2f} deg')
+            print(f'  grounded tibia scale: FR={IK_WALK_FR_GROUNDED_TIBIA_SCALE:.2f}, FL={IK_WALK_FL_GROUNDED_TIBIA_SCALE:.2f}')
+            return
+        value = parts[2].lower()
+        if value in ['on', 'true', '1']:
+            IK_WALK_SPIDER_REACH_ENABLED = True
+            print('IK spider reach ON.')
+            return
+        if value in ['off', 'false', '0']:
+            IK_WALK_SPIDER_REACH_ENABLED = False
+            print('IK spider reach OFF.')
+            return
+
+    if sub in ['outward', 'swingout', 'spiderout']:
+        if len(parts) >= 3:
+            try:
+                IK_WALK_SWING_OUTWARD_CM = clamp_float(float(parts[2]), 0.0, 1.5)
+                print(f'IK airborne outward arc = {IK_WALK_SWING_OUTWARD_CM:.2f} cm')
+            except Exception:
+                print('Usage: ik outward 0.65')
+        else:
+            print(f'IK airborne outward arc = {IK_WALK_SWING_OUTWARD_CM:.2f} cm')
+        return
+
+    if sub in ['reachblend', 'unfold', 'swingextend']:
+        if len(parts) >= 3:
+            try:
+                IK_WALK_FRONT_REACH_BLEND = clamp_float(float(parts[2]), 0.0, 1.0)
+                print(f'IK FL/FR lifted reach blend = {IK_WALK_FRONT_REACH_BLEND:.2f}')
+            except Exception:
+                print('Usage: ik reachblend 0.58')
+        else:
+            print(f'IK FL/FR lifted reach blend = {IK_WALK_FRONT_REACH_BLEND:.2f}')
+        return
+
+    if sub in ['frtibia', 'fr_tibia', 'frtibiaload']:
+        if len(parts) >= 3:
+            try:
+                IK_WALK_FR_GROUNDED_TIBIA_SCALE = clamp_float(float(parts[2]), 0.0, 0.8)
+                print(f'IK FR grounded tibia scale = {IK_WALK_FR_GROUNDED_TIBIA_SCALE:.2f}')
+            except Exception:
+                print('Usage: ik frtibia 0.20')
+        else:
+            print(f'IK FR grounded tibia scale = {IK_WALK_FR_GROUNDED_TIBIA_SCALE:.2f}')
+        return
+
+    return _PREVIOUS_ACTION_IK_SETTINGS_V22(parts)
+
+
+_PREVIOUS_PRINT_IK_STATUS_V22 = print_ik_status
+
+
+def print_ik_status():
+    _PREVIOUS_PRINT_IK_STATUS_V22()
+    print('IK Motion spider reach / FR tibia relief:')
+    print(f'  enabled={IK_WALK_SPIDER_REACH_ENABLED}, outward={IK_WALK_SWING_OUTWARD_CM:.2f} cm')
+    print(f'  FL/FR reach blend={IK_WALK_FRONT_REACH_BLEND:.2f}, FR swing unfold={IK_WALK_FR_SWING_TIBIA_EXTENSION_DEG:.2f} deg')
+    print(f'  grounded tibia scale FR={IK_WALK_FR_GROUNDED_TIBIA_SCALE:.2f}, FL={IK_WALK_FL_GROUNDED_TIBIA_SCALE:.2f}')
+    print(f'  progressive support scales swing={IK_NATIVE_SUPPORT_SWING_SCALE:.2f}, down={IK_NATIVE_SUPPORT_DOWN_SCALE:.2f}')
+
+
+
 if __name__ == "__main__":
     main()
